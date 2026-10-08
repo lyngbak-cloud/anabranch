@@ -76,6 +76,8 @@ jobs:
             debian: bullseye
           - pg: v17
             debian: bookworm
+          - pg: v18
+            debian: bookworm
     steps:
       - uses: actions/checkout@v4
         with:

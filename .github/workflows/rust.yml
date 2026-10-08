@@ -33,7 +33,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Postgres revisions
         id: pg
-        run: echo "key=$(git rev-parse HEAD:vendor/postgres-v14)-$(git rev-parse HEAD:vendor/postgres-v15)-$(git rev-parse HEAD:vendor/postgres-v16)-$(git rev-parse HEAD:vendor/postgres-v17)-${{ hashFiles('postgres.mk', 'Makefile') }}" >> "$GITHUB_OUTPUT"
+        run: echo "key=$(git rev-parse HEAD:vendor/postgres-v14)-$(git rev-parse HEAD:vendor/postgres-v15)-$(git rev-parse HEAD:vendor/postgres-v16)-$(git rev-parse HEAD:vendor/postgres-v17)-$(git rev-parse HEAD:vendor/postgres-v18)-${{ hashFiles('postgres.mk', 'Makefile') }}" >> "$GITHUB_OUTPUT"
       - uses: actions/cache@v4
         with:
           path: pg_install
