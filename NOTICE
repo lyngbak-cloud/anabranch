@@ -3,3 +3,11 @@ Copyright 2022 - 2024 Neon Inc.
 
 The PostgreSQL submodules in vendor/ are licensed under the PostgreSQL license.
 See vendor/postgres-vX/COPYRIGHT for details.
+
+Anabranch
+Copyright 2026 The Anabranch Authors
+
+Anabranch continues the open-source Neon storage engine from the
+neondatabase/neon repository at the release-9129 tag. Neon is a trademark of
+its owner. Anabranch and Lyngbak are not affiliated with or endorsed by Neon
+or Databricks.
