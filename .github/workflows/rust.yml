@@ -1,0 +1,55 @@
+name: Rust
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  BUILD_TYPE: debug
+  CARGO_FLAGS: --locked --features testing,rest_broker
+  NEXTEST_RETRIES: 2
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/share/boost "$AGENT_TOOLSDIRECTORY"
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends build-essential libtool libreadline-dev zlib1g-dev flex bison libseccomp-dev libssl-dev clang pkg-config libpq-dev cmake postgresql-client protobuf-compiler libprotobuf-dev libcurl4-openssl-dev openssl lsof libicu-dev mold
+      - name: Install toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2
+      - name: Postgres revisions
+        id: pg
+        run: echo "key=$(git rev-parse HEAD:vendor/postgres-v14)-$(git rev-parse HEAD:vendor/postgres-v15)-$(git rev-parse HEAD:vendor/postgres-v16)-$(git rev-parse HEAD:vendor/postgres-v17)-${{ hashFiles('postgres.mk', 'Makefile') }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: pg_install
+          key: pg-install-${{ runner.os }}-${{ steps.pg.outputs.key }}
+      - name: Format
+        run: cargo fmt --all -- --check
+      - name: Build
+        run: mold -run make -s -j"$(nproc)" all CARGO_BUILD_FLAGS="$CARGO_FLAGS"
+      - name: Build walproposer-lib
+        run: mold -run make -s -j"$(nproc)" walproposer-lib
+      - name: Clippy
+        run: ./run_clippy.sh
+      - uses: taiki-e/install-action@nextest
+      - name: Test
+        run: |
+          export LD_LIBRARY_PATH="$PWD/pg_install/v17/lib"
+          cargo test --doc $CARGO_FLAGS
+          cargo nextest run $CARGO_FLAGS -E '!package(pageserver)'
+          NEON_PAGESERVER_UNIT_TEST_VIRTUAL_FILE_IOENGINE=tokio-epoll-uring cargo nextest run $CARGO_FLAGS -E 'package(pageserver)'
