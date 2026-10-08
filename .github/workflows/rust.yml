@@ -11,7 +11,7 @@ permissions:
 env:
   CARGO_TERM_COLOR: always
   BUILD_TYPE: debug
-  CARGO_FLAGS: --locked --features testing,rest_broker
+  CARGO_FLAGS: --locked --features testing
   NEXTEST_RETRIES: 2
 
 jobs:
@@ -45,7 +45,9 @@ jobs:
       - name: Build walproposer-lib
         run: mold -run make -s -j"$(nproc)" walproposer-lib
       - name: Clippy
-        run: ./run_clippy.sh
+        run: |
+          source .neon_clippy_args
+          cargo clippy --features testing $CLIPPY_COMMON_ARGS
       - uses: taiki-e/install-action@nextest
       - name: Test
         run: |
