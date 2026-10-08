@@ -308,7 +308,8 @@ impl WalIngest {
                         .await?;
                 }
                 MultiXactRecord::Create(create) => {
-                    self.ingest_multixact_create(modification, &create)?;
+                    self.ingest_multixact_create(modification, &create, ctx)
+                        .await?;
                 }
                 MultiXactRecord::Truncate(truncate) => {
                     self.ingest_multixact_truncate(modification, &truncate, ctx)
@@ -1012,25 +1013,114 @@ impl WalIngest {
         .await
     }
 
-    fn ingest_multixact_create(
+    async fn ingest_multixact_create(
         &mut self,
-        modification: &mut DatadirModification,
+        modification: &mut DatadirModification<'_>,
         xlrec: &XlMultiXactCreate,
+        ctx: &RequestContext,
     ) -> Result<(), WalIngestError> {
-        // Create WAL record for updating the multixact-offsets page
-        let pageno = xlrec.mid / pg_constants::MULTIXACT_OFFSETS_PER_PAGE as u32;
+        let offsets_per_page = pg_constants::MULTIXACT_OFFSETS_PER_PAGE as u32;
+        let pageno = xlrec.mid / offsets_per_page;
         let segno = pageno / pg_constants::SLRU_PAGES_PER_SEGMENT;
         let rpageno = pageno % pg_constants::SLRU_PAGES_PER_SEGMENT;
 
-        modification.put_slru_wal_record(
-            SlruKind::MultiXactOffsets,
-            segno,
-            rpageno,
-            NeonWalRecord::MultixactOffsetCreate {
-                mid: xlrec.mid,
-                moff: xlrec.moff,
-            },
-        )?;
+        // Since PostgreSQL 17.7, RecordNewMultiXact() also sets the starting offset
+        // of the next multixid, and GetMultiXactIdMembers() errors out if that is
+        // still zero, instead of waiting for the next multixid to be created. Do the
+        // same, so that the multixid's members can be read before the next one's
+        // CREATE_ID record arrives: multixids are assigned before they are WAL-logged,
+        // so the next one's record may come much later, or after a later multixid's.
+        // Our v14-v16 Postgres branches predate the change, and don't set it.
+        //
+        // When both offsets are on the same page, write this multixid's own offset
+        // at an LSN just before this record's end LSN: two writes to the same page
+        // at the same LSN would replace each other.
+        let next = if modification.tline.pg_version >= PgMajorVersion::PG17 {
+            let mut next_mid = xlrec.mid.wrapping_add(1);
+            if next_mid < pg_constants::FIRST_MULTIXACT_ID {
+                next_mid = pg_constants::FIRST_MULTIXACT_ID;
+            }
+            // Like in GetNewMultiXactId(), skip over offset 0
+            let mut next_moff = xlrec.moff.wrapping_add(xlrec.nmembers);
+            if next_moff == 0 {
+                next_moff = 1;
+            }
+            Some((next_mid, next_moff))
+        } else {
+            None
+        };
+        let own_rec = NeonWalRecord::MultixactOffsetCreate {
+            mid: xlrec.mid,
+            moff: xlrec.moff,
+        };
+        let before_end_lsn = Lsn(modification.get_lsn().0 - 1);
+        match next {
+            Some((next_mid, _)) if next_mid / offsets_per_page == pageno => {
+                modification.put_slru_wal_record_at(
+                    before_end_lsn,
+                    SlruKind::MultiXactOffsets,
+                    segno,
+                    rpageno,
+                    own_rec,
+                )?;
+            }
+            _ => {
+                modification.put_slru_wal_record(
+                    SlruKind::MultiXactOffsets,
+                    segno,
+                    rpageno,
+                    own_rec,
+                )?;
+            }
+        }
+        if let Some((next_mid, next_moff)) = next {
+            let next_pageno = next_mid / offsets_per_page;
+            let next_segno = next_pageno / pg_constants::SLRU_PAGES_PER_SEGMENT;
+            let next_rpageno = next_pageno % pg_constants::SLRU_PAGES_PER_SEGMENT;
+
+            // WAL from 17.7 and later zeroes the next page before this record, when
+            // the next multixid is the first on it (see GetNewMultiXactId()). Older
+            // minor versions only did that when the next multixid was assigned, so
+            // initialize the page here if needed, like RecordNewMultiXact() does in
+            // recovery.
+            if next_pageno != pageno
+                && self.shard.is_shard_zero()
+                && !self
+                    .slru_page_exists(
+                        modification,
+                        SlruKind::MultiXactOffsets,
+                        next_segno,
+                        next_rpageno,
+                        ctx,
+                    )
+                    .await?
+            {
+                self.handle_slru_extend(
+                    modification,
+                    SlruKind::MultiXactOffsets,
+                    next_segno,
+                    next_rpageno,
+                    ctx,
+                )
+                .await?;
+                modification.put_slru_page_image_at(
+                    before_end_lsn,
+                    SlruKind::MultiXactOffsets,
+                    next_segno,
+                    next_rpageno,
+                    ZERO_PAGE.clone(),
+                )?;
+            }
+            modification.put_slru_wal_record(
+                SlruKind::MultiXactOffsets,
+                next_segno,
+                next_rpageno,
+                NeonWalRecord::MultixactOffsetCreate {
+                    mid: next_mid,
+                    moff: next_moff,
+                },
+            )?;
+        }
 
         // Create WAL records for the update of each affected multixact-members page
         let mut members = xlrec.members.iter();
@@ -1206,17 +1296,30 @@ impl WalIngest {
         let RawXlogRecord { info, lsn, mut buf } = raw_record;
         let pg_version = modification.tline.pg_version;
 
+        // Since v17, the checkpoint record includes wal_level
         if info == pg_constants::XLOG_PARAMETER_CHANGE {
-            if let CheckPoint::V17(cp) = &mut self.checkpoint {
-                let rec = v17::XlParameterChange::decode(&mut buf);
-                cp.wal_level = rec.wal_level;
-                self.checkpoint_modified = true;
+            match &mut self.checkpoint {
+                CheckPoint::V17(cp) => {
+                    cp.wal_level = v17::XlParameterChange::decode(&mut buf).wal_level;
+                    self.checkpoint_modified = true;
+                }
+                CheckPoint::V18(cp) => {
+                    cp.wal_level = v18::XlParameterChange::decode(&mut buf).wal_level;
+                    self.checkpoint_modified = true;
+                }
+                _ => {}
             }
         } else if info == pg_constants::XLOG_END_OF_RECOVERY {
-            if let CheckPoint::V17(cp) = &mut self.checkpoint {
-                let rec = v17::XlEndOfRecovery::decode(&mut buf);
-                cp.wal_level = rec.wal_level;
-                self.checkpoint_modified = true;
+            match &mut self.checkpoint {
+                CheckPoint::V17(cp) => {
+                    cp.wal_level = v17::XlEndOfRecovery::decode(&mut buf).wal_level;
+                    self.checkpoint_modified = true;
+                }
+                CheckPoint::V18(cp) => {
+                    cp.wal_level = v18::XlEndOfRecovery::decode(&mut buf).wal_level;
+                    self.checkpoint_modified = true;
+                }
+                _ => {}
             }
         }
 
@@ -1481,7 +1584,7 @@ impl WalIngest {
                 use utils::rate_limit::RateLimit;
 
                 struct RateLimitPerPgVersion {
-                    rate_limiters: [Lazy<Mutex<RateLimit>>; 4],
+                    rate_limiters: [Lazy<Mutex<RateLimit>>; 5],
                 }
 
                 impl RateLimitPerPgVersion {
@@ -1489,7 +1592,7 @@ impl WalIngest {
                         Self {
                             rate_limiters: [const {
                                 Lazy::new(|| Mutex::new(RateLimit::new(Duration::from_secs(30))))
-                            }; 4],
+                            }; 5],
                         }
                     }
 
@@ -1498,7 +1601,7 @@ impl WalIngest {
                         pg_version: PgMajorVersion,
                     ) -> Option<&Lazy<Mutex<RateLimit>>> {
                         const MIN_PG_VERSION: u32 = PgMajorVersion::PG14.major_version_num();
-                        const MAX_PG_VERSION: u32 = PgMajorVersion::PG17.major_version_num();
+                        const MAX_PG_VERSION: u32 = PgMajorVersion::PG18.major_version_num();
                         let pg_version = pg_version.major_version_num();
 
                         if pg_version < MIN_PG_VERSION || pg_version > MAX_PG_VERSION {
@@ -1546,6 +1649,27 @@ impl WalIngest {
             .await?;
         modification.put_slru_page_image(kind, segno, blknum, img)?;
         Ok(())
+    }
+
+    async fn slru_page_exists(
+        &self,
+        modification: &DatadirModification<'_>,
+        kind: SlruKind,
+        segno: u32,
+        blknum: BlockNumber,
+        ctx: &RequestContext,
+    ) -> Result<bool, WalIngestError> {
+        let tline = modification.tline;
+        if !tline
+            .get_slru_segment_exists(kind, segno, Version::Modified(modification), ctx)
+            .await?
+        {
+            return Ok(false);
+        }
+        let nblocks = tline
+            .get_slru_segment_size(kind, segno, Version::Modified(modification), ctx)
+            .await?;
+        Ok(blknum < nblocks)
     }
 
     async fn handle_slru_extend(
@@ -1624,8 +1748,8 @@ async fn get_relsize(
 #[cfg(test)]
 mod tests {
     use anyhow::Result;
-    use postgres_ffi::PgMajorVersion;
     use postgres_ffi::RELSEG_SIZE;
+    use postgres_ffi::{MultiXactId, MultiXactOffset, PgMajorVersion};
 
     use super::*;
     use crate::DEFAULT_PG_VERSION;
@@ -1667,6 +1791,148 @@ mod tests {
         let walingest = WalIngest::new(tline, Lsn(0x10), ctx).await?;
 
         Ok(walingest)
+    }
+
+    async fn ingest_test_multixact(
+        walingest: &mut WalIngest,
+        tline: &Timeline,
+        lsn: Lsn,
+        (mid, moff, nmembers): (MultiXactId, MultiXactOffset, u32),
+        ctx: &RequestContext,
+    ) -> Result<()> {
+        let xlrec = XlMultiXactCreate {
+            mid,
+            moff,
+            nmembers,
+            members: (0..nmembers)
+                .map(|i| MultiXactMember {
+                    xid: 1000 + i,
+                    status: 0,
+                })
+                .collect(),
+        };
+        let mut m = tline.begin_modification(lsn);
+        walingest
+            .ingest_multixact_create(&mut m, &xlrec, ctx)
+            .await?;
+        m.commit(ctx).await?;
+        Ok(())
+    }
+
+    async fn get_multixact_offset(
+        tline: &Timeline,
+        mid: MultiXactId,
+        lsn: Lsn,
+        ctx: &RequestContext,
+    ) -> Result<MultiXactOffset> {
+        let per_page = pg_constants::MULTIXACT_OFFSETS_PER_PAGE as u32;
+        let pageno = mid / per_page;
+        let key = pageserver_api::key::slru_block_to_key(
+            SlruKind::MultiXactOffsets,
+            pageno / pg_constants::SLRU_PAGES_PER_SEGMENT,
+            pageno % pg_constants::SLRU_PAGES_PER_SEGMENT,
+        );
+        let page = tline.get(key, lsn, ctx).await?;
+        let off = (mid % per_page) as usize * 4;
+        Ok(u32::from_le_bytes(page[off..off + 4].try_into()?))
+    }
+
+    /// Since PostgreSQL 17.7, ingesting a multixid's CREATE_ID also sets the starting
+    /// offset of the next multixid, even when the CREATE_ID records of concurrently
+    /// created multixids arrive in a different order than the multixids were assigned.
+    async fn check_multixact_next_offset(
+        test_name: &'static str,
+        pg_version: PgMajorVersion,
+    ) -> Result<()> {
+        let (tenant, ctx) = TenantHarness::create(test_name).await?.load().await;
+        let tline = tenant
+            .create_test_timeline(TIMELINE_ID, Lsn(8), pg_version, &ctx)
+            .await?;
+        let mut walingest = init_walingest_test(&tline, &ctx).await?;
+        let sets_next = pg_version >= PgMajorVersion::PG17;
+
+        let mut m = tline.begin_modification(Lsn(0x20));
+        walingest
+            .ingest_multixact_zero_page(
+                MultiXactZeroPage {
+                    slru_kind: SlruKind::MultiXactOffsets,
+                    segno: 0,
+                    rpageno: 0,
+                },
+                &mut m,
+                &ctx,
+            )
+            .await?;
+        m.commit(&ctx).await?;
+
+        // Multixids 1, 2 and 3 have 2 members each. 2 was assigned before 3, but
+        // its CREATE_ID record comes after 3's.
+        ingest_test_multixact(&mut walingest, &tline, Lsn(0x30), (1, 1, 2), &ctx).await?;
+        ingest_test_multixact(&mut walingest, &tline, Lsn(0x40), (3, 5, 2), &ctx).await?;
+
+        // Reading multixid 1's members needs the start of multixid 2, before 2's
+        // record has arrived.
+        assert_eq!(get_multixact_offset(&tline, 1, Lsn(0x30), &ctx).await?, 1);
+        assert_eq!(
+            get_multixact_offset(&tline, 2, Lsn(0x30), &ctx).await?,
+            if sets_next { 3 } else { 0 }
+        );
+        assert_eq!(
+            get_multixact_offset(&tline, 2, Lsn(0x40), &ctx).await?,
+            if sets_next { 3 } else { 0 }
+        );
+        assert_eq!(get_multixact_offset(&tline, 3, Lsn(0x40), &ctx).await?, 5);
+        assert_eq!(
+            get_multixact_offset(&tline, 4, Lsn(0x40), &ctx).await?,
+            if sets_next { 7 } else { 0 }
+        );
+
+        ingest_test_multixact(&mut walingest, &tline, Lsn(0x50), (2, 3, 2), &ctx).await?;
+        for (mid, moff) in [(1, 1), (2, 3), (3, 5)] {
+            assert_eq!(
+                get_multixact_offset(&tline, mid, Lsn(0x50), &ctx).await?,
+                moff
+            );
+        }
+
+        if sets_next {
+            // The next multixid is the first one on the next page, which doesn't
+            // exist yet. (WAL from 17.7 and later would have zeroed it first.)
+            let per_page = pg_constants::MULTIXACT_OFFSETS_PER_PAGE as u32;
+            let last = per_page - 1;
+            ingest_test_multixact(&mut walingest, &tline, Lsn(0x60), (last, 100, 3), &ctx).await?;
+            assert_eq!(
+                get_multixact_offset(&tline, last, Lsn(0x60), &ctx).await?,
+                100
+            );
+            assert_eq!(
+                get_multixact_offset(&tline, last + 1, Lsn(0x60), &ctx).await?,
+                103
+            );
+
+            // Offset 0 is skipped over at members wraparound
+            ingest_test_multixact(
+                &mut walingest,
+                &tline,
+                Lsn(0x70),
+                (10, u32::MAX - 1, 2),
+                &ctx,
+            )
+            .await?;
+            assert_eq!(get_multixact_offset(&tline, 11, Lsn(0x70), &ctx).await?, 1);
+        }
+
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn test_multixact_next_offset() -> Result<()> {
+        check_multixact_next_offset("test_multixact_next_offset", PgMajorVersion::PG17).await
+    }
+
+    #[tokio::test]
+    async fn test_multixact_next_offset_pg16() -> Result<()> {
+        check_multixact_next_offset("test_multixact_next_offset_pg16", PgMajorVersion::PG16).await
     }
 
     #[tokio::test]
