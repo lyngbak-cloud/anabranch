@@ -32,7 +32,7 @@ jobs:
 
   storage:
     needs: meta
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.IMAGE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
@@ -66,7 +66,7 @@ jobs:
 
   compute:
     needs: meta
-    runs-on: ubuntu-24.04
+    runs-on: ${{ vars.IMAGE_RUNNER || 'ubuntu-24.04' }}
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -98,10 +98,10 @@ jobs:
             PG_VERSION=${{ matrix.pg }}
             BUILD_TAG=${{ needs.meta.outputs.tag }}
             DEBIAN_VERSION=${{ matrix.debian }}
-            EXTENSIONS=all
+            EXTENSIONS=${{ vars.COMPUTE_EXTENSIONS || 'all' }}
           push: true
           tags: |
-            ${{ env.REGISTRY }}/anabranch-compute-${{ matrix.pg }}:${{ needs.meta.outputs.tag }}
-            ${{ needs.meta.outputs.release == 'true' && format('{0}/anabranch-compute-{1}:latest', env.REGISTRY, matrix.pg) || '' }}
+            ${{ env.REGISTRY }}/anabranch-compute-${{ matrix.pg }}:${{ needs.meta.outputs.tag }}${{ vars.COMPUTE_EXTENSIONS && vars.COMPUTE_EXTENSIONS != 'all' && format('-{0}', vars.COMPUTE_EXTENSIONS) || '' }}
+            ${{ needs.meta.outputs.release == 'true' && (vars.COMPUTE_EXTENSIONS == '' || vars.COMPUTE_EXTENSIONS == 'all') && format('{0}/anabranch-compute-{1}:latest', env.REGISTRY, matrix.pg) || '' }}
           cache-from: type=registry,ref=${{ env.REGISTRY }}/anabranch-cache:compute-${{ matrix.pg }}
           cache-to: type=registry,ref=${{ env.REGISTRY }}/anabranch-cache:compute-${{ matrix.pg }},mode=max
