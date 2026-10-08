@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: rust-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   BUILD_TYPE: debug
@@ -62,5 +66,5 @@ jobs:
         run: |
           export LD_LIBRARY_PATH="$PWD/pg_install/v17/lib"
           cargo test --doc $CARGO_FLAGS
-          cargo nextest run $CARGO_FLAGS -E '!package(pageserver)'
-          NEON_PAGESERVER_UNIT_TEST_VIRTUAL_FILE_IOENGINE=tokio-epoll-uring cargo nextest run $CARGO_FLAGS -E 'package(pageserver)'
+          cargo nextest run $CARGO_FLAGS --no-fail-fast -E '!package(pageserver) & !binary(test_real_gcs)'
+          NEON_PAGESERVER_UNIT_TEST_VIRTUAL_FILE_IOENGINE=tokio-epoll-uring cargo nextest run $CARGO_FLAGS --no-fail-fast -E 'package(pageserver)'
