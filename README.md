@@ -1,29 +1,36 @@
-[![Neon](https://github.com/user-attachments/assets/fd91da5f-44a9-41c7-9075-36a5b5608083)](https://neon.com)
+# Anabranch
 
+Anabranch is a serverless Postgres storage engine. Postgres runs as a stateless compute node, streams its write-ahead log to a quorum of safekeepers, and reads pages from pageservers that keep every version of every page in object storage. That is what makes branches, point-in-time restore, read replicas and scale-to-zero cheap.
 
+Anabranch continues the open-source Neon engine from [neondatabase/neon](https://github.com/neondatabase/neon) at its `release-9129` tag. Binaries, crates, the `neon` Postgres extension and its settings keep their names, so existing deployments and tooling keep working.
 
-# Neon
+## Status
 
-Neon is an open-source serverless Postgres database platform. It separates storage and compute and substitutes the PostgreSQL storage layer by redistributing data across a cluster of nodes.
+| | |
+|---|---|
+| Postgres | 16 and 17; 18 is being added on the `pg18` branch |
+| Images | `ghcr.io/lyngbak-cloud/anabranch` with pageserver, safekeeper, storage broker, storage controller and proxy; `ghcr.io/lyngbak-cloud/anabranch-compute-v16` and `-v17` |
+| Upstream | Fixes that apply to neondatabase/neon are sent there too |
 
-## Quick start
-Try the [Neon Free Tier](https://neon.com/signup) to create a serverless Postgres instance. Then connect to it with your preferred Postgres client (psql, dbeaver, etc) or use the online [SQL Editor](https://neon.com/docs/get-started-with-neon/query-with-neon-sql-editor/). See [Connect from any application](https://neon.com/docs/connect/connect-from-any-app/) for connection instructions.
+## Run it
 
-Alternatively, compile and run the project [locally](#running-local-installation).
+- **Hosted.** [Lyngbak](https://lyngbak.com), the maintainer, runs Anabranch as a managed service in the EU: branches, point-in-time restore, read replicas, scale-to-zero, and databases inside your VPC reachable over VPN.
+- **Self-hosted.** Each component runs as its own container; the [docs](docs/SUMMARY.md) describe the pageserver, safekeepers, storage broker and storage controller and their object storage configuration. The [docker-compose](docker-compose/) directory is the test configuration of those images, not a deployment.
+- **From source.** See [Running a local development environment](#running-a-local-development-environment).
 
 ## Architecture overview
 
-A Neon installation consists of compute nodes and the Neon storage engine. Compute nodes are stateless PostgreSQL nodes backed by the Neon storage engine.
+An installation consists of compute nodes and the storage engine. Compute nodes are stateless PostgreSQL nodes backed by the storage engine.
 
-The Neon storage engine consists of two major components:
-- Pageserver: Scalable storage backend for the compute nodes.
-- Safekeepers: The safekeepers form a redundant WAL service that received WAL from the compute node, and stores it durably until it has been processed by the pageserver and uploaded to cloud storage.
+The storage engine has two major components:
+- Pageserver: scalable storage backend for the compute nodes.
+- Safekeepers: a redundant WAL service that receives WAL from the compute node and stores it durably until the pageserver has processed it and uploaded it to object storage.
 
-See developer documentation in [SUMMARY.md](/docs/SUMMARY.md) for more information.
+See the developer documentation in [SUMMARY.md](/docs/SUMMARY.md).
 
 ## Running a local development environment
 
-Neon can be run on a workstation for small experiments and to test code changes, by
+Anabranch can be run on a workstation for small experiments and to test code changes, by
 following these instructions.
 
 #### Installing dependencies on Linux
@@ -48,7 +55,7 @@ pacman -S base-devel readline zlib libseccomp openssl clang \
 postgresql-libs cmake postgresql protobuf curl lsof
 ```
 
-Building Neon requires 3.15+ version of `protoc` (protobuf-compiler). If your distribution provides an older version, you can install a newer version from [here](https://github.com/protocolbuffers/protobuf/releases).
+Building Anabranch requires 3.15+ version of `protoc` (protobuf-compiler). If your distribution provides an older version, you can install a newer version from [here](https://github.com/protocolbuffers/protobuf/releases).
 
 2. [Install Rust](https://www.rust-lang.org/tools/install)
 ```
@@ -98,12 +105,12 @@ Newer rustc versions most probably will work fine, yet older ones might not be s
 
 #### Building on Linux
 
-1. Build neon and patched postgres
+1. Build Anabranch and the patched Postgres
 ```
-# Note: The path to the neon sources can not contain a space.
+# Note: The path to the sources can not contain a space.
 
-git clone --recursive https://github.com/neondatabase/neon.git
-cd neon
+git clone --recursive https://github.com/lyngbak-cloud/anabranch.git
+cd anabranch
 
 # The preferred and default is to make a debug build. This will create a
 # demonstrably slower build than a release build. For a release build,
@@ -115,12 +122,12 @@ make -j`nproc` -s
 
 #### Building on OSX
 
-1. Build neon and patched postgres
+1. Build Anabranch and the patched Postgres
 ```
-# Note: The path to the neon sources can not contain a space.
+# Note: The path to the sources can not contain a space.
 
-git clone --recursive https://github.com/neondatabase/neon.git
-cd neon
+git clone --recursive https://github.com/lyngbak-cloud/anabranch.git
+cd anabranch
 
 # The preferred and default is to make a debug build. This will create a
 # demonstrably slower build than a release build. For a release build,
@@ -137,7 +144,7 @@ To run the integration tests or Python scripts (not required to use the code), i
 Python (3.11 or higher), and install the python3 packages using `./scripts/pysync` (requires [poetry>=1.8](https://python-poetry.org/)) in the project directory.
 
 
-#### Running neon database
+#### Running Anabranch
 1. Start pageserver and postgres on top of it (should be called from repo root):
 ```sh
 # Create repository in .neon with proper paths to binaries and data
@@ -256,10 +263,10 @@ You can install `cargo-nextest` with `cargo install cargo-nextest`.
 
 ### Integration tests
 
-Ensure your dependencies are installed as described [here](https://github.com/neondatabase/neon#dependency-installation-notes).
+Ensure your dependencies are installed as described [here](#dependency-installation-notes).
 
 ```sh
-git clone --recursive https://github.com/neondatabase/neon.git
+git clone --recursive https://github.com/lyngbak-cloud/anabranch.git
 
 CARGO_BUILD_FLAGS="--features=testing" make
 
@@ -299,25 +306,33 @@ To view your `rustdoc` documentation in a browser, try running `cargo doc --no-d
 
 See also README files in some source directories, and `rustdoc` style documentation comments.
 
-Other resources:
+Background reading from the Neon team:
 
-- [SELECT 'Hello, World'](https://neon.com/blog/hello-world/): Blog post by Nikita Shamgunov on the high level architecture
-- [Architecture decisions in Neon](https://neon.com/blog/architecture-decisions-in-neon/): Blog post by Heikki Linnakangas
+- [SELECT 'Hello, World'](https://neon.tech/blog/hello-world/): Blog post by Nikita Shamgunov on the high level architecture
+- [Architecture decisions in Neon](https://neon.tech/blog/architecture-decisions-in-neon/): Blog post by Heikki Linnakangas
 - [Neon: Serverless PostgreSQL!](https://www.youtube.com/watch?v=rES0yzeERns): Presentation on storage system by Heikki Linnakangas in the CMU Database Group seminar series
 
 ### Postgres-specific terms
 
-Due to Neon's very close relation with PostgreSQL internals, numerous specific terms are used.
+Due to the engine's very close relation with PostgreSQL internals, numerous specific terms are used.
 The same applies to certain spelling: i.e. we use MB to denote 1024 * 1024 bytes, while MiB would be technically more correct, it's inconsistent with what PostgreSQL code and its documentation use.
 
 To get more familiar with this aspect, refer to:
 
-- [Neon glossary](/docs/glossary.md)
+- [Glossary](/docs/glossary.md)
 - [PostgreSQL glossary](https://www.postgresql.org/docs/14/glossary.html)
-- Other PostgreSQL documentation and sources (Neon fork sources can be found [here](https://github.com/neondatabase/postgres))
+- Other PostgreSQL documentation and sources (the Postgres fork is [lyngbak-cloud/postgres](https://github.com/lyngbak-cloud/postgres))
 
 ## Join the development
 
 - Read [CONTRIBUTING.md](/CONTRIBUTING.md) to learn about project code style and practices.
 - To get familiar with a source tree layout, use [sourcetree.md](/docs/sourcetree.md).
 - To learn more about PostgreSQL internals, check http://www.interdb.jp/pg/index.html
+
+## Trademarks
+
+Neon is a trademark of its owner. Anabranch and Lyngbak are not affiliated with or endorsed by Neon or Databricks. The names of binaries, crates, the Postgres extension and its settings are kept for compatibility.
+
+## License
+
+Apache License 2.0, see [LICENSE](LICENSE). The Postgres sources under `vendor/` are under the PostgreSQL License, see [NOTICE](NOTICE).
