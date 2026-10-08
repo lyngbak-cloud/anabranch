@@ -2,7 +2,7 @@
 
 Anabranch is a serverless Postgres storage engine. Postgres runs as a stateless compute node, streams its write-ahead log to a quorum of safekeepers, and reads pages from pageservers that keep every version of every page in object storage. That is what makes branches, point-in-time restore, read replicas and scale-to-zero cheap.
 
-Anabranch continues the open-source Neon engine from [neondatabase/neon](https://github.com/neondatabase/neon) at its `release-9129` tag. Binaries, crates, the `neon` Postgres extension and its settings keep their names, so existing deployments and tooling keep working.
+Anabranch continues the open-source Neon engine from [neondatabase/neon](https://github.com/neondatabase/neon) at commit `fa504217c6` of its main branch (2026-08-31), which includes its last release, `release-9129`. Binaries, crates, the `neon` Postgres extension and its settings keep their names, so existing deployments and tooling keep working.
 
 ## Status
 
@@ -308,8 +308,8 @@ See also README files in some source directories, and `rustdoc` style documentat
 
 Background reading from the Neon team:
 
-- [SELECT 'Hello, World'](https://neon.tech/blog/hello-world/): Blog post by Nikita Shamgunov on the high level architecture
-- [Architecture decisions in Neon](https://neon.tech/blog/architecture-decisions-in-neon/): Blog post by Heikki Linnakangas
+- [SELECT 'Hello, World'](https://neon.com/blog/hello-world/): Blog post by Nikita Shamgunov on the high level architecture
+- [Architecture decisions in Neon](https://neon.com/blog/architecture-decisions-in-neon/): Blog post by Heikki Linnakangas
 - [Neon: Serverless PostgreSQL!](https://www.youtube.com/watch?v=rES0yzeERns): Presentation on storage system by Heikki Linnakangas in the CMU Database Group seminar series
 
 ### Postgres-specific terms

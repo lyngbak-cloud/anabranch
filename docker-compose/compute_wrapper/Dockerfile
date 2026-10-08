@@ -1,5 +1,5 @@
-ARG REPOSITORY=ghcr.io/neondatabase
-ARG COMPUTE_IMAGE=compute-node-v14
+ARG REPOSITORY=ghcr.io/lyngbak-cloud
+ARG COMPUTE_IMAGE=anabranch-compute-v16
 ARG TAG=latest
 
 FROM $REPOSITORY/${COMPUTE_IMAGE}:$TAG
